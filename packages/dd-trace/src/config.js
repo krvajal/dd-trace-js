@@ -10,6 +10,9 @@ const { isTrue, isFalse } = require('./util')
 
 const runtimeId = `${id().toString()}${id().toString()}`
 
+const fromEntries = Object.fromEntries || (entries =>
+  entries.reduce((obj, [k, v]) => Object.assign(obj, { [k]: v }), {}))
+
 class Config {
   constructor (options) {
     options = options || {}
@@ -21,12 +24,6 @@ class Config {
     tagger.add(this.tags, process.env.DD_TRACE_GLOBAL_TAGS)
     tagger.add(this.tags, options.tags)
 
-    const DD_TRACE_ANALYTICS_ENABLED = coalesce(
-      options.analytics,
-      process.env.DD_TRACE_ANALYTICS_ENABLED,
-      process.env.DD_TRACE_ANALYTICS,
-      false
-    )
     // Temporary disabled
     const DD_PROFILING_ENABLED = coalesce(
       // options.profiling,
@@ -66,13 +63,15 @@ class Config {
       process.env.DD_TRACE_URL,
       null
     )
-    const DD_SERVICE = options.service ||
+    const DD_SERVICE =
+      options.service ||
       process.env.DD_SERVICE ||
       process.env.DD_SERVICE_NAME ||
       this.tags.service ||
       process.env.AWS_LAMBDA_FUNCTION_NAME ||
       pkg.name ||
       'node'
+    const DD_SERVICE_MAPPING = process.env.DD_SERVICE_MAPPING || ''
     const DD_ENV = coalesce(
       options.env,
       process.env.DD_ENV,
@@ -128,14 +127,29 @@ class Config {
       process.env.DD_TRACE_EXPERIMENTAL_INTERNAL_ERRORS_ENABLED,
       false
     )
+    // TODO(simon-id): add documentation for appsec config when we release it in public beta
+    const DD_APPSEC_ENABLED = coalesce(
+      options.experimental && options.experimental.appsec,
+      process.env.DD_EXPERIMENTAL_APPSEC_ENABLED,
+      process.env.DD_APPSEC_ENABLED,
+      false
+    )
 
     const sampler = (options.experimental && options.experimental.sampler) || {}
     const ingestion = options.ingestion || {}
     const dogstatsd = coalesce(options.dogstatsd, {})
 
     Object.assign(sampler, {
-      sampleRate: coalesce(ingestion.sampleRate, sampler.sampleRate, process.env.DD_TRACE_SAMPLE_RATE),
-      rateLimit: coalesce(ingestion.rateLimit, sampler.rateLimit, process.env.DD_TRACE_RATE_LIMIT)
+      sampleRate: coalesce(
+        ingestion.sampleRate,
+        sampler.sampleRate,
+        process.env.DD_TRACE_SAMPLE_RATE
+      ),
+      rateLimit: coalesce(
+        ingestion.rateLimit,
+        sampler.rateLimit,
+        process.env.DD_TRACE_RATE_LIMIT
+      )
     })
 
     const inAWSLambda = process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined
@@ -149,28 +163,47 @@ class Config {
     this.site = coalesce(options.site, process.env.DD_SITE, 'datadoghq.com')
     this.hostname = DD_AGENT_HOST || (this.url && this.url.hostname)
     this.port = String(DD_TRACE_AGENT_PORT || (this.url && this.url.port))
-    this.flushInterval = coalesce(parseInt(options.flushInterval, 10), defaultFlushInterval)
+    this.flushInterval = coalesce(
+      parseInt(options.flushInterval, 10),
+      defaultFlushInterval
+    )
     this.sampleRate = coalesce(Math.min(Math.max(options.sampleRate, 0), 1), 1)
     this.logger = options.logger
     this.plugins = !!coalesce(options.plugins, true)
     this.service = DD_SERVICE
+    this.serviceMapping = DD_SERVICE_MAPPING.length ? fromEntries(
+      DD_SERVICE_MAPPING.split(',').map(x => x.trim().split(':'))
+    ) : {}
     this.version = DD_VERSION
-    this.analytics = isTrue(DD_TRACE_ANALYTICS_ENABLED)
     this.dogstatsd = {
-      hostname: coalesce(dogstatsd.hostname, process.env.DD_DOGSTATSD_HOSTNAME, this.hostname),
-      port: String(coalesce(dogstatsd.port, process.env.DD_DOGSTATSD_PORT, 8125))
+      hostname: coalesce(
+        dogstatsd.hostname,
+        process.env.DD_DOGSTATSD_HOSTNAME,
+        this.hostname
+      ),
+      port: String(
+        coalesce(dogstatsd.port, process.env.DD_DOGSTATSD_PORT, 8125)
+      )
     }
     this.runtimeMetrics = isTrue(DD_RUNTIME_METRICS_ENABLED)
     this.trackAsyncScope = options.trackAsyncScope !== false
     this.experimental = {
-      b3: isTrue(DD_TRACE_B3_ENABLED),
-      runtimeId: isTrue(DD_TRACE_RUNTIME_ID_ENABLED),
-      exporter: DD_TRACE_EXPORTER,
-      enableGetRumData: isTrue(DD_TRACE_GET_RUM_DATA_ENABLED),
+      b3: !(!options.experimental || !options.experimental.b3),
+      runtimeId: !(!options.experimental || !options.experimental.runtimeId),
+      exporter: options.experimental && options.experimental.exporter,
+      enableGetRumData:
+        options.experimental && !!options.experimental.enableGetRumData,
       sampler,
-      internalErrors: isTrue(DD_TRACE_INTERNAL_ERRORS_ENABLED)
+      internalErrors:
+        options.experimental && options.experimental.internalErrors
     }
-    this.reportHostname = isTrue(coalesce(options.reportHostname, process.env.DD_TRACE_REPORT_HOSTNAME, false))
+    this.reportHostname = isTrue(
+      coalesce(
+        options.reportHostname,
+        process.env.DD_TRACE_REPORT_HOSTNAME,
+        false
+      )
+    )
     this.scope = isFalse(process.env.DD_CONTEXT_PROPAGATION)
       ? scopes.NOOP
       : coalesce(options.scope, process.env.DD_TRACE_SCOPE)
@@ -187,8 +220,15 @@ class Config {
     this.lookup = options.lookup
     this.startupLogs = isTrue(DD_TRACE_STARTUP_LOGS)
     this.protocolVersion = DD_TRACE_AGENT_PROTOCOL_VERSION
+    this.appsec = {
+      enabled: isTrue(DD_APPSEC_ENABLED)
+    }
 
-    tagger.add(this.tags, { service: this.service, env: this.env, version: this.version })
+    tagger.add(this.tags, {
+      service: this.service,
+      env: this.env,
+      version: this.version
+    })
 
     if (this.experimental.runtimeId) {
       tagger.add(this.tags, {
